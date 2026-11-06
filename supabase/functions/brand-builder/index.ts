@@ -3,7 +3,7 @@
 // Tables are RLS-locked; only this function (service role) reads or writes them.
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 
-const SITE_URL = "https://brand.34automation.online/client/";
+const SITE_URL = "https://clients.34automation.co.uk/client/";
 const MAX_BODY = 4_000_000; // worksheet can carry mood-board images
 
 const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, {
