@@ -249,7 +249,7 @@ function render() {
 async function load() {
   const [r, g] = await Promise.all([api({ action: 'list' }), api({ action: 'logins' })]);
   if (!r.ok) { if (r.code === 'not_admin') return signOut('That key isn’t right.'); toast('Couldn’t load clients. Check your connection.'); return; }
-  LOGINS = {}; if (g.ok) g.logins.forEach(x => { LOGINS[x.link_id] = x; });
+  LOGINS = {}; if (g.ok && Array.isArray(g.logins)) g.logins.forEach(x => { LOGINS[x.link_id] = x; });
   LINKS = r.links; render();
 }
 function showApp() { $('#login').hidden = true; $('#app').hidden = false; $('#signout').hidden = false; $('#refresh').hidden = false; load(); }
