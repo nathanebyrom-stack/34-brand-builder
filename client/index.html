@@ -657,6 +657,9 @@ input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:0;backg
 #gate h1{font-family:var(--display);font-stretch:125%;font-weight:800;text-transform:uppercase;line-height:.98;letter-spacing:-.01em;font-size:clamp(24px,5vw,36px);margin:0;color:var(--silver);text-wrap:balance}
 #gate p{margin:0;color:var(--steel);font-size:16px;line-height:1.6;max-width:52ch}
 #gate p b{color:var(--silver);font-weight:500;user-select:all}
+#gate p a{color:var(--silver);text-decoration:underline;text-underline-offset:3px}
+#gate p a:hover{color:var(--gold-c)}
+#gate a.btn{text-decoration:none}
 #gate .busy{height:2px;background:var(--edge);overflow:hidden}
 #gate .busy::after{content:"";display:block;height:100%;width:30%;background:var(--gold-c);animation:busy 1.2s ease-in-out infinite}
 @keyframes busy{from{transform:translateX(-100%)}to{transform:translateX(340%)}}
@@ -674,7 +677,7 @@ input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:0;backg
   <h1 id="gTitle">Opening your Brand Builder</h1>
   <p id="gMsg">One moment.</p>
   <div class="busy" id="gBusy"></div>
-  <div class="row"><button class="btn gold" id="gRetry" hidden>Try again</button></div>
+  <div class="row"><button class="btn gold" id="gRetry" hidden>Try again</button><a class="btn gold" id="gSignIn" href="https://34automation.co.uk/clients/" hidden>Sign in again</a></div>
 </div></div>
 <header class="top">
   <div class="mark" aria-hidden="true"><div><b>34</b><i>AUTOMATION</i></div></div>
@@ -725,8 +728,22 @@ const CONTACT = 'nathan@34automation.co.uk';
 const QS = new URLSearchParams(location.search);
 const TOKEN = (QS.get('k') || '').trim();
 const VIEW_ID = (QS.get('view') || '').trim();
+/* sign-in session from the client area (34automation.co.uk/clients/): arrives as #s=…, is cleared from the
+   address bar at once and kept for this tab only, so a reload works but a new tab needs a fresh sign-in */
+const SIGN_IN_URL = 'https://34automation.co.uk/clients/';
+const HQ = new URLSearchParams(location.hash.slice(1));
+let SESSION = '';
+if (!TOKEN && !VIEW_ID) {
+  SESSION = (HQ.get('s') || QS.get('s') || '').trim();
+  try { if (SESSION) sessionStorage.setItem('bb34-session', SESSION); else SESSION = sessionStorage.getItem('bb34-session') || ''; } catch (e) {}
+}
+if (HQ.has('s') || QS.has('s')) {
+  try { const u = new URL(location.href); u.searchParams.delete('s'); history.replaceState(null, '', u.pathname + u.search); } catch (e) {}
+}
+const cred = () => (SESSION ? { session: SESSION } : { token: TOKEN });
+const act = a => (SESSION ? 'session_' + a : a);
 const LINK = { ok: false, readonly: false, submitted: false, client: '', company: '', email: '' };
-const STORE_KEY = 'bb34-ws-' + (TOKEN ? TOKEN.slice(0, 10) : 'none');
+let STORE_KEY = 'bb34-ws-' + (TOKEN ? TOKEN.slice(0, 10) : 'none');
 
 function newAvatar(n = 1) {
   return { label: 'Customer ' + n, name: '', age: '', role: '', location: '', income: '', life: '',
@@ -798,7 +815,7 @@ function queueSync() {
 async function syncNow() {
   if (!dirty || syncing || !LINK.ok || LINK.submitted) return;
   syncing = true; dirty = false;
-  const r = await api({ action: 'save', token: TOKEN, device: deviceId(), worksheet: S });
+  const r = await api({ action: act('save'), ...cred(), device: deviceId(), worksheet: S });
   syncing = false;
   if (r.ok) { setSync('Saved'); if (dirty) queueSync(); return; }
   dirty = true;
@@ -808,10 +825,13 @@ async function syncNow() {
 }
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'hidden' || !dirty || !LINK.ok || LINK.submitted || LINK.readonly) return;
-  try { navigator.sendBeacon(API, new Blob([JSON.stringify({ action: 'save', token: TOKEN, device: deviceId(), worksheet: S })], { type: 'text/plain' })); dirty = false; } catch (e) {}
+  try { navigator.sendBeacon(API, new Blob([JSON.stringify({ action: act('save'), ...cred(), device: deviceId(), worksheet: S })], { type: 'text/plain' })); dirty = false; } catch (e) {}
 });
 const MSG = {
-  none: ['Your personal link opens this', `The Brand Builder opens from the personal link 34 Automation sent you. If you need one, email <b>${CONTACT}</b>.`],
+  none: ['Your personal link opens this', `The Brand Builder opens from the personal link 34 Automation sent you, or when you <a href="${SIGN_IN_URL}">sign in to the client area</a>. If you need access, email <b>${CONTACT}</b>.`],
+  session_expired: ['Your sign-in has timed out', 'For your security, a sign-in lasts 12 hours. Sign in again and you’ll carry on where you left off.'],
+  session_invalid: ['Please sign in again', `Your sign-in has ended. Sign in again to carry on. If it keeps happening, email <b>${CONTACT}</b>.`],
+  s_other_device: ['Your Brand Builder is open on another device', 'It can only be open on one device at a time, so your answers don’t get overwritten. Sign in again to carry on here.'],
   invalid: ['This link doesn’t work', `Check you opened the whole link from your email. If it still won’t open, email <b>${CONTACT}</b>.`],
   revoked: ['This link has been switched off', `If you think that’s a mistake, email <b>${CONTACT}</b>.`],
   expired: ['This link has expired', `Email <b>${CONTACT}</b> and Nathan will send you a fresh one. Your answers so far are kept.`],
@@ -821,15 +841,18 @@ const MSG = {
   offline: ['Can’t reach the Brand Builder', 'Check your internet connection, then try again.'],
   admin: ['For 34 Automation only', 'Open client answers from the admin page.']
 };
-function gate(title, msgHtml, busy, retry) {
+function gate(title, msgHtml, busy, retry, signIn) {
   $('#gate').hidden = false; $('#gTitle').textContent = title; $('#gMsg').innerHTML = msgHtml || '';
-  $('#gBusy').hidden = !busy; $('#gRetry').hidden = !retry;
+  $('#gBusy').hidden = !busy; $('#gRetry').hidden = !retry; $('#gSignIn').hidden = !signIn;
 }
 function gateFor(code, r) {
+  if (SESSION && (code === 'other_device' || code === 'invalid')) code = code === 'invalid' ? 'session_invalid' : 's_other_device';
   const k = MSG[code] ? code : (code === 'server_error' ? 'offline' : 'invalid');
+  const signIn = ['session_expired', 'session_invalid', 's_other_device'].includes(k);
+  if (signIn) { try { sessionStorage.removeItem('bb34-session'); } catch (e) {} }
   let [t, m] = MSG[k];
   if (k === 'submitted' && r && r.client_name) t = 'Thanks, ' + r.client_name.split(/\s+/)[0] + '. Your brand is with 34 Automation';
-  gate(t, m, false, k === 'offline');
+  gate(t, m, false, k === 'offline', signIn);
 }
 function getPath(path) { return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), S); }
 function setPath(path, val) {
@@ -2232,7 +2255,7 @@ async function submitToStudio(btn) {
     return;
   }
   btn.disabled = true; btn.textContent = 'Sending…'; clearTimeout(syncTimer);
-  const r = await api({ action: 'submit', token: TOKEN, device: deviceId(), worksheet: S });
+  const r = await api({ action: act('submit'), ...cred(), device: deviceId(), worksheet: S });
   btn.disabled = false;
   if (r.ok) {
     LINK.submitted = true; dirty = false; setSync('Sent');
@@ -2241,7 +2264,7 @@ async function submitToStudio(btn) {
     return;
   }
   delete btn.dataset.armed; btn.textContent = 'Send to 34 Automation';
-  if (['revoked', 'expired', 'other_device', 'invalid', 'submitted'].includes(r.code)) { LINK.ok = false; gateFor(r.code, r); return; }
+  if (['revoked', 'expired', 'other_device', 'invalid', 'submitted', 'session_expired', 'session_invalid'].includes(r.code)) { LINK.ok = false; gateFor(r.code, r); return; }
   $('#sendNote').textContent = r.code === 'too_large'
     ? `Your answers are too large to send with all the mood board images. Remove a few images and try again, or email the answers file to ${CONTACT}.`
     : `That didn’t send. Check your connection and try again, or email the answers file to ${CONTACT}.`;
@@ -2372,11 +2395,12 @@ function startApp() {
   buildRail(); setMode(S.meta.mode); renderStep(); updateClientLine();
 }
 async function bootClient() {
-  if (!TOKEN) return gateFor('none');
+  if (!TOKEN && !SESSION) return gateFor('none');
   const dev = deviceId(); if (!dev) return gateFor('no_storage');
   gate('Opening your Brand Builder', 'One moment.', true);
-  const r = await api({ action: 'open', token: TOKEN, device: dev });
+  const r = await api({ action: act('open'), ...cred(), device: dev });
   if (!r.ok) return gateFor(r.code, r);
+  if (SESSION && r.ref) STORE_KEY = 'bb34-ws-s' + r.ref; // stable per client, so this device's copy survives a new sign-in
   Object.assign(LINK, { ok: true, client: r.client_name || '', company: r.company || '', email: r.client_email || '' });
   const server = r.worksheet && r.worksheet.meta ? mergeDeep(defaultState(), r.worksheet) : null;
   const local = loadLocal();

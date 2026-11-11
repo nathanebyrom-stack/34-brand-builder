@@ -77,12 +77,22 @@ h2{font-family:var(--display);font-stretch:125%;font-weight:800;text-transform:u
 .empty{padding:28px 0;color:var(--steel);border-bottom:1px solid var(--edge)}
 #toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--plate);border:1px solid var(--edge);border-left:2px solid var(--gold);padding:10px 16px;font-size:14px;z-index:20}
 .login{max-width:460px;margin:12vh auto 0}
+/* client sign-in (username + password) */
+.signin{grid-column:1/-1;border:1px solid var(--edge);border-left:2px solid var(--gold);background:var(--well);padding:16px;display:grid;gap:12px}
+.signin .grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.signin .pw{display:flex;gap:8px}
+.signin .pw .inp{font-family:var(--mono);letter-spacing:.04em}
+.once{border:1px solid var(--gold);border-left-width:2px;background:var(--well);padding:16px;display:grid;gap:10px}
+.once dl{margin:0;display:grid;grid-template-columns:max-content minmax(0,1fr);gap:6px 14px;align-items:baseline}
+.once dt{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--steel)}
+.once dd{margin:0;font-family:var(--mono);font-size:14px;color:var(--silver);user-select:all;overflow-wrap:anywhere}
+.once p{margin:0;color:var(--steel);font-size:13.5px}
 @media (max-width:820px){
   .grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
   .item{grid-template-columns:minmax(0,1fr)}
   .item .acts{justify-content:flex-start}
 }
-@media (max-width:480px){ .grid{grid-template-columns:minmax(0,1fr)} .grid .wide{grid-column:auto} }
+@media (max-width:480px){ .grid,.signin .grid{grid-template-columns:minmax(0,1fr)} .grid .wide{grid-column:auto} }
 </style>
 </head>
 <body>
@@ -115,7 +125,7 @@ h2{font-family:var(--display);font-stretch:125%;font-weight:800;text-transform:u
         <div class="newlink" id="newLink" hidden>
           <div class="label">Their link <i>/</i> copy it now</div>
           <code id="newUrl"></code>
-          <div class="row"><button class="btn sm" id="copyNew">Copy link</button></div>
+          <div class="row"><button class="btn sm" id="copyNew">Copy link</button><button class="btn line sm" id="loginNew" hidden>Set a sign-in for them too</button></div>
           <p>For security only a fingerprint of the link is stored, so it can’t be shown again. If it’s lost, use “New link” on their row.</p>
         </div>
       </div>
@@ -126,6 +136,12 @@ h2{font-family:var(--display);font-stretch:125%;font-weight:800;text-transform:u
           <div class="filters" id="filters">
             <button data-f="all" aria-pressed="true">All</button><button data-f="sub" aria-pressed="false">Sent</button><button data-f="prog" aria-pressed="false">In progress</button><button data-f="new" aria-pressed="false">Not opened</button><button data-f="off" aria-pressed="false">Closed</button>
           </div>
+        </div>
+        <div class="once" id="loginOnce" hidden tabindex="-1" aria-live="polite">
+          <div class="label">Sign-in for <span id="onceWho"></span> <i>/</i> copy it now</div>
+          <dl><dt>Sign in at</dt><dd id="onceUrl">https://34automation.co.uk/clients/</dd><dt>Username</dt><dd id="onceUser"></dd><dt>Password</dt><dd id="oncePass"></dd></dl>
+          <div class="row"><button class="btn sm" id="onceCopy">Copy all three</button><button class="btn ghost sm" id="onceDone">Done, hide it</button></div>
+          <p>This password is shown once. Only a scrambled fingerprint is stored, so it can’t be shown again. If it’s lost, use “Reset sign-in”. Send it to the client privately, ideally separately from the username.</p>
         </div>
         <div class="ledger" id="ledger"></div>
       </div>
@@ -138,7 +154,9 @@ const API = 'https://faaraefaigsngvuuvsyv.supabase.co/functions/v1/brand-builder
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 let KEY = ''; try { KEY = localStorage.getItem('bb34-admin') || ''; } catch (e) {}
-let LINKS = [], FILTER = 'all';
+let LINKS = [], FILTER = 'all', LOGINS = {}, LAST_NEW = '';
+const SIGN_IN_URL = 'https://34automation.co.uk/clients/';
+const USER_RE = /^[a-z0-9][a-z0-9._@-]{2,63}$/;
 
 async function api(body) {
   try {
@@ -147,9 +165,20 @@ async function api(body) {
   } catch (e) { return { ok: false, code: 'offline' }; }
 }
 function toast(t) { const el = $('#toast'); el.textContent = t; el.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => el.hidden = true, 2600); }
-async function copy(text) {
-  try { await navigator.clipboard.writeText(text); toast('Link copied'); }
-  catch (e) { const r = document.createRange(); r.selectNodeContents($('#newUrl')); getSelection().removeAllRanges(); getSelection().addRange(r); toast('Selected: press Copy'); }
+async function copy(text, el = '#newUrl', done = 'Link copied') {
+  try { await navigator.clipboard.writeText(text); toast(done); }
+  catch (e) { const r = document.createRange(); r.selectNodeContents($(el)); getSelection().removeAllRanges(); getSelection().addRange(r); toast('Selected: press Copy'); }
+}
+// password generator: 3 groups of 4 from 55 unambiguous characters (about 69 bits), no modulo bias
+function genPassword() {
+  const A = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789'; let out = '';
+  while (out.length < 12) { for (const b of crypto.getRandomValues(new Uint8Array(24))) { if (b < 220 && out.length < 12) out += A[b % 55]; } }
+  return out.match(/.{4}/g).join('-');
+}
+function suggestUser(name) {
+  let u = String(name || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '.').replace(/^\.+|\.+$/g, '').slice(0, 40);
+  if (u.length < 3) u = (u ? u + '.' : '') + 'client';
+  return u;
 }
 const when = d => d ? new Date(d).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '–';
 const day = d => new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
@@ -161,6 +190,41 @@ function stateOf(l) {
   if (l.first_opened_at) return ['prog', l.saved_at ? 'In progress' : 'Opened'];
   return ['new', 'Not opened'];
 }
+function signInFact(g) {
+  if (!g) return '<span>Sign-in not set</span>';
+  let t = `<span>Sign-in ${esc(g.username)} · ${g.last_login_at ? 'last used ' + when(g.last_login_at) : 'not used yet'}</span>`;
+  if (g.locked_until && new Date(g.locked_until) > new Date()) t += `<span class="warn">Sign-in paused until ${when(g.locked_until)} after 5 wrong tries (Reset sign-in clears it)</span>`;
+  return t;
+}
+function openSignIn(id) {
+  const row = document.querySelector(`.item[data-id="${CSS.escape(id)}"]`); if (!row) return;
+  const open = row.querySelector('.signin'); if (open) { open.remove(); return; }
+  const l = LINKS.find(x => x.id === id) || {}; const g = LOGINS[id];
+  const box = document.createElement('div'); box.className = 'signin';
+  box.innerHTML = `<div class="label">${g ? 'Reset' : 'Set'} sign-in <i>/</i> ${esc(l.client_name)}</div>
+    <div class="grid">
+      <div class="f"><label for="su-${esc(id)}">Username</label><input class="inp" id="su-${esc(id)}" data-k="u" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="64" value="${esc(g ? g.username : suggestUser(l.client_name))}"></div>
+      <div class="f"><label for="sp-${esc(id)}">Password</label><div class="pw"><input class="inp" id="sp-${esc(id)}" data-k="p" autocomplete="new-password" autocapitalize="off" spellcheck="false" maxlength="200" value="${esc(genPassword())}"><button class="btn ghost sm" type="button" data-s="gen" aria-label="Make a new password">New</button></div></div>
+    </div>
+    <p class="msg">Letters, numbers, dots, dashes or @ for the username (not case-sensitive). Passwords need at least 10 characters.${g ? ' Saving signs them out anywhere they’re signed in.' : ''}</p>
+    <div class="row"><button class="btn sm" type="button" data-s="save">Save sign-in</button><button class="btn ghost sm" type="button" data-s="cancel">Cancel</button><p class="msg err" data-k="m" role="status"></p></div>`;
+  row.appendChild(box); box.querySelector('[data-k="u"]').focus();
+}
+async function saveSignIn(box, id) {
+  const u = box.querySelector('[data-k="u"]'), p = box.querySelector('[data-k="p"]'), m = box.querySelector('[data-k="m"]'), b = box.querySelector('[data-s="save"]');
+  const username = u.value.normalize('NFKC').trim().toLowerCase(), password = p.value.normalize('NFC');
+  m.textContent = '';
+  if (!USER_RE.test(username)) { m.textContent = 'Usernames are 3–64 characters: letters, numbers, dots, dashes, underscores or @, starting with a letter or number.'; u.focus(); return; }
+  if (password.length < 10) { m.textContent = 'Use at least 10 characters.'; p.focus(); return; }
+  b.disabled = true;
+  const r = await api({ action: 'set_login', id, username, password });
+  b.disabled = false;
+  if (!r.ok) { m.textContent = { username_taken: 'Another client already has that username.', bad_username: 'That username isn’t allowed.', bad_password: 'Use at least 10 characters.', not_found: 'That client no longer exists. Refresh.' }[r.code] || 'Couldn’t save the sign-in. Try again.'; return; }
+  const l = LINKS.find(x => x.id === id) || {};
+  $('#onceWho').textContent = l.client_name || 'client'; $('#onceUser').textContent = r.username; $('#oncePass').textContent = password;
+  p.value = ''; $('#loginOnce').hidden = false; $('#loginOnce').focus(); $('#loginOnce').scrollIntoView({ block: 'center', behavior: 'smooth' });
+  toast('Sign-in saved. Copy it now.'); load();
+}
 function render() {
   const rows = LINKS.filter(l => FILTER === 'all' || stateOf(l)[0] === FILTER);
   const sent = LINKS.filter(l => l.submitted_at).length;
@@ -169,10 +233,12 @@ function render() {
     const [k, t] = stateOf(l);
     return `<div class="item" data-id="${esc(l.id)}">
       <div class="who"><b>${esc(l.client_name)}</b><span>${esc([l.company, l.client_email].filter(Boolean).join(' · '))}</span>${l.note ? `<span>${esc(l.note)}</span>` : ''}<div class="state ${k}">${esc(t)}</div></div>
-      <div class="facts"><span>Created ${day(l.created_at)}</span><span>Expires ${day(l.expires_at)}</span><span>Last seen ${when(l.last_seen_at)}</span><span>Device ${l.device_id ? 'locked' : 'not yet'}</span>${l.blocked_attempts ? `<span class="warn">${l.blocked_attempts} blocked attempt${l.blocked_attempts === 1 ? '' : 's'} from another device</span>` : ''}</div>
+      <div class="facts"><span>Created ${day(l.created_at)}</span><span>Expires ${day(l.expires_at)}</span><span>Last seen ${when(l.last_seen_at)}</span><span>Device ${l.device_id ? 'locked' : 'not yet'}</span>${signInFact(LOGINS[l.id])}${l.blocked_attempts ? `<span class="warn">${l.blocked_attempts} blocked attempt${l.blocked_attempts === 1 ? '' : 's'} from another device</span>` : ''}</div>
       <div class="acts">
         ${l.saved_at || l.submitted_at ? `<a class="btn sm" href="./?view=${encodeURIComponent(l.id)}" target="_blank" rel="noopener">View answers</a>` : ''}
         ${l.device_id && !l.submitted_at ? '<button class="btn ghost sm" data-a="reset_device">Reset device</button>' : ''}
+        <button class="btn ghost sm" data-a="login">${LOGINS[l.id] ? 'Reset sign-in' : 'Set sign-in'}</button>
+        ${LOGINS[l.id] ? '<button class="btn ghost sm" data-a="clear_login">Remove sign-in</button>' : ''}
         <button class="btn ghost sm" data-a="reissue">New link</button>
         ${!l.submitted_at ? '<button class="btn ghost sm" data-a="extend">+30 days</button>' : '<button class="btn ghost sm" data-a="reopen">Let them edit</button>'}
         ${l.revoked ? '<button class="btn ghost sm" data-a="restore">Switch on</button>' : '<button class="btn ghost sm" data-a="revoke">Switch off</button>'}
@@ -181,13 +247,15 @@ function render() {
   }).join('') : `<div class="empty">${LINKS.length ? 'Nothing in this view.' : 'No client links yet. Create the first one above.'}</div>`;
 }
 async function load() {
-  const r = await api({ action: 'list' });
+  const [r, g] = await Promise.all([api({ action: 'list' }), api({ action: 'logins' })]);
   if (!r.ok) { if (r.code === 'not_admin') return signOut('That key isn’t right.'); toast('Couldn’t load clients. Check your connection.'); return; }
+  LOGINS = {}; if (g.ok) g.logins.forEach(x => { LOGINS[x.link_id] = x; });
   LINKS = r.links; render();
 }
 function showApp() { $('#login').hidden = true; $('#app').hidden = false; $('#signout').hidden = false; $('#refresh').hidden = false; load(); }
 function signOut(msg) {
   KEY = ''; try { localStorage.removeItem('bb34-admin'); } catch (e) {}
+  $('#oncePass').textContent = ''; $('#onceUser').textContent = ''; $('#loginOnce').hidden = true;
   $('#app').hidden = true; $('#signout').hidden = true; $('#refresh').hidden = true; $('#login').hidden = false; $('#loginMsg').textContent = msg || '';
 }
 $('#signin').onclick = async () => {
@@ -198,6 +266,7 @@ $('#signin').onclick = async () => {
   $('#key').value = ''; showApp();
 };
 $('#key').addEventListener('keydown', e => { if (e.key === 'Enter') $('#signin').click(); });
+$('#ledger').addEventListener('keydown', e => { const box = e.target.closest('.signin'); if (box && e.key === 'Enter' && e.target.matches('input')) { e.preventDefault(); saveSignIn(box, box.closest('[data-id]').dataset.id); } });
 $('#signout').onclick = () => signOut();
 $('#refresh').onclick = load;
 $('#filters').onclick = e => { const b = e.target.closest('[data-f]'); if (!b) return; FILTER = b.dataset.f; document.querySelectorAll('#filters button').forEach(x => x.setAttribute('aria-pressed', x === b)); render(); };
@@ -209,20 +278,32 @@ $('#create').onclick = async () => {
   $('#create').disabled = false;
   if (!r.ok) { $('#createMsg').textContent = 'Couldn’t create the link. Try again.'; return; }
   $('#newUrl').textContent = r.url; $('#newLink').hidden = false;
+  LAST_NEW = r.link && r.link.id || ''; $('#loginNew').hidden = !LAST_NEW;
   ['#cName', '#cCompany', '#cEmail', '#cNote'].forEach(s => $(s).value = '');
   load();
 };
 $('#copyNew').onclick = () => copy($('#newUrl').textContent);
+$('#loginNew').onclick = () => { if (FILTER !== 'all') $('#filters [data-f="all"]').click(); openSignIn(LAST_NEW); const row = document.querySelector(`.item[data-id="${CSS.escape(LAST_NEW)}"]`); if (row) row.scrollIntoView({ block: 'center', behavior: 'smooth' }); };
+$('#onceCopy').onclick = () => copy(`Sign in at: ${SIGN_IN_URL}\nUsername: ${$('#onceUser').textContent}\nPassword: ${$('#oncePass').textContent}`, '#loginOnce dl', 'Sign-in copied');
+$('#onceDone').onclick = () => { $('#oncePass').textContent = ''; $('#onceUser').textContent = ''; $('#loginOnce').hidden = true; };
 $('#ledger').onclick = async e => {
+  const s = e.target.closest('[data-s]');
+  if (s) {
+    const box = s.closest('.signin'), sid = s.closest('[data-id]').dataset.id;
+    if (s.dataset.s === 'gen') { box.querySelector('[data-k="p"]').value = genPassword(); box.querySelector('[data-k="m"]').textContent = ''; return; }
+    if (s.dataset.s === 'cancel') { box.remove(); return; }
+    if (s.dataset.s === 'save') return saveSignIn(box, sid);
+  }
   const b = e.target.closest('[data-a]'); if (!b) return;
   const id = b.closest('[data-id]').dataset.id; const a = b.dataset.a;
-  const sure = { delete: 'Tap again to delete for good', reissue: 'Tap again: old link stops working', revoke: 'Tap again to switch off', reopen: 'Tap again to reopen' };
+  if (a === 'login') return openSignIn(id);
+  const sure = { delete: 'Tap again to delete for good', reissue: 'Tap again: old link stops working', revoke: 'Tap again to switch off', reopen: 'Tap again to reopen', clear_login: 'Tap again: their sign-in stops working' };
   if (sure[a] && !b.dataset.armed) { b.dataset.armed = '1'; b.textContent = sure[a]; return; }
   b.disabled = true;
   const r = await api({ action: a, id, days: 30, confirm: a === 'delete' ? 'delete' : undefined });
   if (!r.ok) { b.disabled = false; toast('That didn’t work. Try again.'); return; }
   if (a === 'reissue') { $('#newUrl').textContent = r.url; $('#newLink').hidden = false; scrollTo({ top: 0, behavior: 'smooth' }); toast('New link made. Copy it at the top.'); }
-  else toast({ reset_device: 'Device reset: their link works on the next device that opens it', extend: 'Extended by 30 days', revoke: 'Link switched off', restore: 'Link switched on', reopen: 'They can edit and send again', delete: 'Deleted' }[a]);
+  else toast({ reset_device: 'Device reset: their link works on the next device that opens it', extend: 'Extended by 30 days', revoke: 'Link switched off', restore: 'Link switched on', reopen: 'They can edit and send again', delete: 'Deleted', clear_login: 'Sign-in removed. Their personal link still works' }[a]);
   load();
 };
 if (KEY) showApp();
