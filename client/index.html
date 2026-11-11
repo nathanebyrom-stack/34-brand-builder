@@ -1,8 +1,7 @@
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<!doctype html><html lang="en-GB"><head><meta charset="utf-8"><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style>
 <title>34 Brand Builder</title>
 <meta name="robots" content="noindex,nofollow">
 <meta name="referrer" content="no-referrer">
-<meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..800&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
@@ -670,6 +669,8 @@ input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:0;backg
   *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}
 }
 </style>
+</head>
+<body>
 
 <div id="gate" role="alert" aria-live="polite"><div class="gbox">
   <div class="mark" aria-hidden="true"><div><b>34</b><i>AUTOMATION</i></div></div>
@@ -713,12 +714,26 @@ input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:0;backg
 <div id="toast" aria-live="polite"></div>
 <div id="modal" hidden></div>
 <input type="file" id="importFile" accept=".json,application/json" hidden>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="vendor/three.min.js"></script>
 <script>
 /* ================= core: helpers, state, saving ================= */
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+/* worksheet hygiene: anything loaded from the server, this browser or a file is cleaned before it can reach innerHTML */
+const HEX_RE = /^#[0-9A-Fa-f]{6}$/, IMG_RE = /^data:image\/(png|jpeg|svg\+xml);base64,[A-Za-z0-9+\/]+=*$/; // SVG uploads are kept as-is (they never run script inside <img>)
+const safeHex = v => (typeof v === 'string' && HEX_RE.test(v)) ? v : '';
+const safeImg = v => (typeof v === 'string' && IMG_RE.test(v)) ? v : '';
+const safeFont = v => String(v ?? '').replace(/[^A-Za-z0-9 \-]/g, '').slice(0, 60);
+function cleanWS(s) {
+  try {
+    (s.colours && Array.isArray(s.colours.slots) ? s.colours.slots : []).forEach(x => { if (x && typeof x === 'object') x.hex = safeHex(x.hex); });
+    if (s.logo) s.logo.upload = safeImg(s.logo.upload);
+    if (s.insp) s.insp.images = (Array.isArray(s.insp.images) ? s.insp.images : []).map(safeImg).filter(Boolean);
+    if (s.fonts && s.fonts.custom) { s.fonts.custom.h = safeFont(s.fonts.custom.h); s.fonts.custom.b = safeFont(s.fonts.custom.b); }
+  } catch (e) {}
+  return s;
+}
 const uid = () => Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -785,7 +800,7 @@ function mergeDeep(base, add) {
   return add === undefined ? base : add;
 }
 function loadLocal() {
-  try { const raw = localStorage.getItem(STORE_KEY); if (raw) return mergeDeep(defaultState(), JSON.parse(raw)); } catch (e) {}
+  try { const raw = localStorage.getItem(STORE_KEY); if (raw) return cleanWS(mergeDeep(defaultState(), JSON.parse(raw))); } catch (e) {}
   return null;
 }
 let S = defaultState();
@@ -1185,8 +1200,8 @@ function currentFonts() {
   const c = S.fonts.custom;
   const p = FONT_PAIRS.find(x => x.id === S.fonts.pair) || FONT_PAIRS.find(x => x.id === recommendedPairs()[0]);
   return {
-    h: c.h ? c.h : p.h, hw: c.h ? '700' : maxW(p.hw), hwRaw: c.h ? '400;700' : p.hw,
-    b: c.b ? c.b : p.b, bw: c.b ? '400' : (p.bw.split(';')[0] || '400'), bwRaw: c.b ? '400;600' : p.bw,
+    h: c.h ? safeFont(c.h) : p.h, hw: c.h ? '700' : maxW(p.hw), hwRaw: c.h ? '400;700' : p.hw,
+    b: c.b ? safeFont(c.b) : p.b, bw: c.b ? '400' : (p.bw.split(';')[0] || '400'), bwRaw: c.b ? '400;600' : p.bw,
     label: c.h || c.b ? 'Custom pairing' : p.mood, chosen: !!(S.fonts.pair || c.h)
   };
 }
@@ -1716,7 +1731,7 @@ const STEPS = [
       <div class="grid g2" style="margin-top:22px">
         <div class="paper"><h3>Your favourites <span id="favCount" class="sub"></span></h3><p class="sub">Tap ♥ on any logo to keep it here. ★ marks your top pick.</p><div class="favs" id="favs"></div></div>
         <div class="paper stack"><h3>Already have a logo or a sketch?</h3>
-          <div class="drop" id="logoDrop">${S.logo.upload ? `<img src="${S.logo.upload}" alt="Uploaded logo">` : '<b>Drop an image here or tap to upload</b><span>PNG, JPG or SVG</span>'}<input type="file" accept="image/*" id="logoFile" aria-label="Upload a logo"></div>
+          <div class="drop" id="logoDrop">${S.logo.upload ? `<img src="${esc(safeImg(S.logo.upload))}" alt="Uploaded logo">` : '<b>Drop an image here or tap to upload</b><span>PNG, JPG or SVG</span>'}<input type="file" accept="image/*" id="logoFile" aria-label="Upload a logo"></div>
           ${S.logo.upload ? '<button class="btn ghost sm" id="logoRm" style="width:max-content">Remove image</button>' : ''}
           <div><span class="lab">Logo styles you like</span>${chipToggle('logo.styles', ['Wordmark', 'Monogram', 'Emblem / badge', 'Symbol + name', 'Mascot / character', 'Abstract shape', 'Hand-drawn', 'Minimal line'], 8)}</div>
           ${fArea('logo.likes', 'Logos you admire, and why', 'e.g. Love the simplicity of the Apple logo', { rows: 2 })}
@@ -2136,7 +2151,7 @@ function drawComps() {
   hydrate($('#comps'));
 }
 function drawMood() {
-  $('#moodGrid').innerHTML = S.insp.images.map((src, i) => `<figure><img src="${src}" alt="Mood board image ${i + 1}"><button data-mrm="${i}" aria-label="Remove image">✕</button></figure>`).join('');
+  $('#moodGrid').innerHTML = S.insp.images.map((src, i) => `<figure><img src="${esc(safeImg(src))}" alt="Mood board image ${i + 1}"><button data-mrm="${i}" aria-label="Remove image">✕</button></figure>`).join('');
 }
 document.addEventListener('click', e => {
   const id = STEPS[S.meta.step]?.id;
@@ -2205,7 +2220,7 @@ function boardHTML() {
       ${S.voice.pairs.some(p => p.is) ? `<div class="vchips">${S.voice.pairs.filter(p => p.is).map(p => `<span>${esc(p.is)}${p.not ? `, never ${esc(p.not.toLowerCase())}` : ''}</span>`).join('')}</div>` : ''}
       <div class="cols"><div><b>Words we love</b><p>${S.voice.use.length ? esc(S.voice.use.join(', ')) : em('None yet')}</p></div><div><b>Words we avoid</b><p>${S.voice.avoid.length ? esc(S.voice.avoid.join(', ')) : em('None yet')}</p></div></div></div>
     ${S.insp.competitors.some(c => c.name) || S.insp.admired.length ? `<div class="bsec"><h5>Landscape</h5><div class="cols"><div><b>Competitors</b><p>${esc(S.insp.competitors.filter(c => c.name).map(c => c.name).join(', ')) || em('None listed')}</p></div><div><b>Brands we admire</b><p>${esc(S.insp.admired.join(', ')) || em('None listed')}</p></div></div></div>` : ''}
-    ${S.insp.images.length ? `<div class="bsec"><h5>Mood board</h5><div class="bimgs">${S.insp.images.map(s => `<img src="${s}" alt="" style="height:110px">`).join('')}</div></div>` : ''}
+    ${S.insp.images.length ? `<div class="bsec"><h5>Mood board</h5><div class="bimgs">${S.insp.images.map(s => `<img src="${esc(safeImg(s))}" alt="" style="height:110px">`).join('')}</div></div>` : ''}
     <div class="bfoot"><span>Prepared with 34 Automation · Designed for you by us</span><span>${esc(S.client.name || '')}${S.client.name ? ' · ' : ''}${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}</span></div>
   </div>`;
 }
@@ -2214,8 +2229,8 @@ async function makePDF(btn) {
   if (!canDownload()) { noDownloads(); return; }
   const label = btn.textContent; btn.disabled = true; btn.textContent = 'Preparing PDF…';
   try {
-    await loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js');
-    await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
+    await loadScript(new URL('vendor/html2canvas.min.js', location.href).href);
+    await loadScript(new URL('vendor/jspdf.umd.min.js', location.href).href);
     await loadCurrentFonts();
     const el = $('#board'); const canvas = await html2canvas(el, { scale: 2, backgroundColor: '#F2F1ED', useCORS: true, logging: false });
     const pdf = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4' }); const pw = 210, ph = 297;
@@ -2280,7 +2295,7 @@ async function showSubmissions() {
     list.addEventListener('click', ev => {
       const b = ev.target.closest('[data-sopen]'); if (!b) return;
       if (!b.dataset.armed) { b.dataset.armed = '1'; b.textContent = 'Replace what’s on screen?'; return; }
-      const doc = snap.docs.find(d => d.id === b.dataset.sopen); S = mergeDeep(defaultState(), doc.data().worksheet); save(); close(); go(11); toast('Opened ' + doc.data().company);
+      const doc = snap.docs.find(d => d.id === b.dataset.sopen); S = cleanWS(mergeDeep(defaultState(), doc.data().worksheet)); save(); close(); go(11); toast('Opened ' + doc.data().company);
     });
   } catch (e) { $('#subList').innerHTML = '<p class="sub">Couldn’t load submissions right now. Try again in a moment.</p>'; }
 }
@@ -2381,7 +2396,7 @@ $('#backBtn').onclick = () => go(S.meta.step - 1);
 $('#nextBtn').onclick = () => go(S.meta.step === STEPS.length - 1 ? 0 : S.meta.step + 1);
 $('#importFile').addEventListener('change', async e => {
   const f = e.target.files[0]; if (!f) return;
-  try { const data = JSON.parse(await f.text()); if (!data || !data.meta || !data.name) throw 0; S = mergeDeep(defaultState(), data); save(); setMode(S.meta.mode); go(STEPS.length - 1); toast('Worksheet opened'); }
+  try { const data = JSON.parse(await f.text()); if (!data || !data.meta || !data.name) throw 0; S = cleanWS(mergeDeep(defaultState(), data)); save(); setMode(S.meta.mode); go(STEPS.length - 1); toast('Worksheet opened'); }
   catch (err) { toast('That file isn’t a Brand Builder worksheet.'); }
   e.target.value = '';
 });
@@ -2402,7 +2417,7 @@ async function bootClient() {
   if (!r.ok) return gateFor(r.code, r);
   if (SESSION && r.ref) STORE_KEY = 'bb34-ws-s' + r.ref; // stable per client, so this device's copy survives a new sign-in
   Object.assign(LINK, { ok: true, client: r.client_name || '', company: r.company || '', email: r.client_email || '' });
-  const server = r.worksheet && r.worksheet.meta ? mergeDeep(defaultState(), r.worksheet) : null;
+  const server = r.worksheet && r.worksheet.meta ? cleanWS(mergeDeep(defaultState(), r.worksheet)) : null;
   const local = loadLocal();
   S = server && local ? ((local.meta.updated || 0) > (server.meta.updated || 0) ? local : server) : (server || local || defaultState());
   let fill = false;
@@ -2420,7 +2435,7 @@ async function bootView() {
   const r = await api({ action: 'get', id: VIEW_ID }, key);
   if (!r.ok) return gate('Couldn’t load this client', 'Go back to the admin page and try again.', false, true);
   Object.assign(LINK, { readonly: true, client: r.link.client_name, company: r.link.company || '' });
-  S = mergeDeep(defaultState(), r.link.worksheet || {}); S.meta.step = STEPS.length - 1;
+  S = cleanWS(mergeDeep(defaultState(), r.link.worksheet || {})); S.meta.step = STEPS.length - 1;
   startApp(); setSync('Read only');
 }
 $('#gRetry').onclick = () => location.reload();

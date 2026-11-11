@@ -83,6 +83,22 @@ function clientIp(req: Request) {
   return (req.headers.get("cf-connecting-ip") || xff || req.headers.get("x-real-ip") || "unknown").slice(0, 64);
 }
 
+// Strip anything a browser could run before it is stored: colours must be #RRGGBB,
+// images PNG/JPEG/SVG base64 data URLs (what the Brand Builder itself produces), font names plain text.
+const HEX = /^#[0-9A-Fa-f]{6}$/, IMG = /^data:image\/(png|jpeg|svg\+xml);base64,[A-Za-z0-9+/]+=*$/;
+// deno-lint-ignore no-explicit-any
+function cleanWorksheet(w: unknown): Record<string, any> | null {
+  if (!w || typeof w !== "object" || Array.isArray(w)) return null;
+  // deno-lint-ignore no-explicit-any
+  const ws = w as Record<string, any>;
+  const font = (v: unknown) => String(v ?? "").replace(/[^A-Za-z0-9 \-]/g, "").slice(0, 60);
+  if (Array.isArray(ws.colours?.slots)) for (const sl of ws.colours.slots) if (sl && typeof sl === "object") sl.hex = typeof sl.hex === "string" && HEX.test(sl.hex) ? sl.hex : "";
+  if (ws.logo && typeof ws.logo === "object") ws.logo.upload = typeof ws.logo.upload === "string" && IMG.test(ws.logo.upload) ? ws.logo.upload : "";
+  if (ws.insp && typeof ws.insp === "object") ws.insp.images = Array.isArray(ws.insp.images) ? ws.insp.images.filter((x: unknown) => typeof x === "string" && IMG.test(x)) : [];
+  if (ws.fonts?.custom && typeof ws.fonts.custom === "object") { ws.fonts.custom.h = font(ws.fonts.custom.h); ws.fonts.custom.b = font(ws.fonts.custom.b); }
+  return ws;
+}
+
 // ---------- client side ----------
 async function loadLink(token: unknown, device: unknown) {
   if (typeof token !== "string" || token.length < 20 || token.length > 64) return { err: "invalid" };
@@ -116,14 +132,23 @@ async function clientAction(action: string, body: Record<string, unknown>) {
     });
   }
   if (action === "save" || action === "submit") {
-    if (!body.worksheet || typeof body.worksheet !== "object") return fail("no_worksheet");
-    const patch: Record<string, unknown> = { worksheet: body.worksheet, saved_at: now, last_seen_at: now };
+    const ws = cleanWorksheet(body.worksheet);
+    if (!ws) return fail("no_worksheet");
+    const patch: Record<string, unknown> = { worksheet: ws, saved_at: now, last_seen_at: now };
     if (action === "submit") patch.submitted_at = now;
     const { error } = await db.from("links").update(patch).eq("id", link.id);
     if (error) return fail("save_failed", 500);
     return json({ ok: true, saved_at: now, submitted: action === "submit" });
   }
   return fail("unknown_action");
+}
+
+// Failed-attempt counters only matter for 30 minutes, so anything an hour old goes; finished sessions go a
+// week after they expire. Runs on every sign-in attempt and on the scheduled keep-alive ping (3 times a day),
+// so no counter outlives 24 hours.
+async function housekeeping() {
+  await db.from("login_attempts").delete().lt("updated_at", new Date(Date.now() - 36e5).toISOString());
+  await db.from("sessions").delete().lt("expires_at", new Date(Date.now() - 7 * 864e5).toISOString());
 }
 
 // ---------- sign-in (username + password) ----------
@@ -144,9 +169,7 @@ async function signIn(req: Request, body: Record<string, unknown>) {
   const lockedOut = (until: string) =>
     out({ ok: false, code: "locked", retry_after: Math.max(1, Math.ceil((new Date(until).getTime() - Date.now()) / 1000)) }, 429);
 
-  // housekeeping on every attempt: counters older than a day, sessions a week past expiry
-  await db.from("login_attempts").delete().lt("updated_at", new Date(Date.now() - 864e5).toISOString());
-  await db.from("sessions").delete().lt("expires_at", new Date(Date.now() - 7 * 864e5).toISOString());
+  await housekeeping();
 
   const username = normUser(body.username);
   const password = normPass(body.password);
@@ -231,8 +254,9 @@ async function sessionAction(action: string, body: Record<string, unknown>) {
   }
   if (action === "session_save" || action === "session_submit") {
     if (link.device_id && link.device_id !== device) return fail("other_device", 403);
-    if (!body.worksheet || typeof body.worksheet !== "object") return fail("no_worksheet");
-    const patch: Record<string, unknown> = { worksheet: body.worksheet, saved_at: now, last_seen_at: now };
+    const ws = cleanWorksheet(body.worksheet);
+    if (!ws) return fail("no_worksheet");
+    const patch: Record<string, unknown> = { worksheet: ws, saved_at: now, last_seen_at: now };
     if (action === "session_submit") patch.submitted_at = now;
     const { error } = await db.from("links").update(patch).eq("id", link.id);
     if (error) return fail("save_failed", 500);
@@ -245,9 +269,18 @@ async function sessionAction(action: string, body: Record<string, unknown>) {
 // ---------- admin side ----------
 async function isAdmin(req: Request) {
   const key = req.headers.get("x-admin-key") || "";
-  if (key.length < 8 || key.length > 100) return false;
-  const { data } = await db.from("settings").select("value").eq("key", "admin_key_hash").maybeSingle();
-  return !!data && sameText(await sha256(key), data.value);
+  if (!key) return false;
+  // same attempt limiter as client sign-in, keyed on the caller's IP: while locked, even the right key waits
+  const ipKey = await attemptKey("ip:", "admin|" + clientIp(req));
+  const { data: lock } = await db.from("login_attempts").select("locked_until").eq("key", ipKey).gt("locked_until", new Date().toISOString()).maybeSingle();
+  if (lock) return false;
+  let good = false;
+  if (key.length >= 8 && key.length <= 100) {
+    const { data } = await db.from("settings").select("value").eq("key", "admin_key_hash").maybeSingle();
+    good = !!data && sameText(await sha256(key), data.value);
+  }
+  if (!good) await db.rpc("bb_login_fail", { p_keys: [ipKey] });
+  return good;
 }
 const LIST_COLS =
   "id, client_name, client_email, company, note, created_at, expires_at, revoked, device_id, first_opened_at, last_seen_at, open_count, blocked_attempts, saved_at, submitted_at";
@@ -365,6 +398,7 @@ Deno.serve(async (req) => {
     if (action === "ping") {
       await db.from("pings").insert({});
       await db.from("pings").delete().lt("at", new Date(Date.now() - 90 * 864e5).toISOString());
+      await housekeeping();
       return json({ ok: true });
     }
     if (action === "sign_in") return await signIn(req, body);
