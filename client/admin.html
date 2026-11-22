@@ -77,6 +77,9 @@ h2{font-family:var(--display);font-stretch:125%;font-weight:800;text-transform:u
 .empty{padding:28px 0;color:var(--steel);border-bottom:1px solid var(--edge)}
 #toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--plate);border:1px solid var(--edge);border-left:2px solid var(--gold);padding:10px 16px;font-size:14px;z-index:20}
 .login{max-width:460px;margin:12vh auto 0}
+dialog{background:var(--plate);color:var(--silver);border:1px solid var(--edge);padding:24px;width:min(440px,calc(100vw - 32px))}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+dialog form{display:grid;gap:14px}
 @media (max-width:820px){
   .grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
   .item{grid-template-columns:minmax(0,1fr)}
@@ -132,6 +135,16 @@ h2{font-family:var(--display);font-stretch:125%;font-weight:800;text-transform:u
     </div>
   </section>
 </div>
+<dialog id="loginDlg" aria-labelledby="ldTitle">
+  <form id="ldForm" autocomplete="off">
+    <div><div class="label">Client area sign-in</div><h2 id="ldTitle" style="font-size:22px">Set login</h2></div>
+    <p class="msg">They sign in at 34automation.co.uk/clients. Only a scrambled fingerprint of the password is stored, so note it down now.</p>
+    <div class="f"><label for="ldUser">Username</label><input class="inp" id="ldUser" autocapitalize="none" spellcheck="false" placeholder="e.g. sam.patel"></div>
+    <div class="f"><label for="ldPass">Password (8+ characters)</label><input class="inp" id="ldPass" type="password" autocomplete="new-password"></div>
+    <p class="msg err" id="ldMsg" role="alert"></p>
+    <div class="row"><button class="btn" id="ldSave">Save login</button><button class="btn ghost" type="button" id="ldClear" hidden>Remove login</button><button class="btn ghost" type="button" id="ldCancel">Cancel</button></div>
+  </form>
+</dialog>
 <div id="toast" hidden></div>
 <script>
 const API = 'https://faaraefaigsngvuuvsyv.supabase.co/functions/v1/brand-builder';
@@ -169,10 +182,11 @@ function render() {
     const [k, t] = stateOf(l);
     return `<div class="item" data-id="${esc(l.id)}">
       <div class="who"><b>${esc(l.client_name)}</b><span>${esc([l.company, l.client_email].filter(Boolean).join(' · '))}</span>${l.note ? `<span>${esc(l.note)}</span>` : ''}<div class="state ${k}">${esc(t)}</div></div>
-      <div class="facts"><span>Created ${day(l.created_at)}</span><span>Expires ${day(l.expires_at)}</span><span>Last seen ${when(l.last_seen_at)}</span><span>Device ${l.device_id ? 'locked' : 'not yet'}</span>${l.blocked_attempts ? `<span class="warn">${l.blocked_attempts} blocked attempt${l.blocked_attempts === 1 ? '' : 's'} from another device</span>` : ''}</div>
+      <div class="facts"><span>Created ${day(l.created_at)}</span><span>Expires ${day(l.expires_at)}</span><span>Last seen ${when(l.last_seen_at)}</span><span>Device ${l.device_id ? 'locked' : 'not yet'}</span><span>Login ${l.username ? esc(l.username) : 'none'}</span>${l.blocked_attempts ? `<span class="warn">${l.blocked_attempts} blocked attempt${l.blocked_attempts === 1 ? '' : 's'} from another device</span>` : ''}</div>
       <div class="acts">
         ${l.saved_at || l.submitted_at ? `<a class="btn sm" href="./?view=${encodeURIComponent(l.id)}" target="_blank" rel="noopener">View answers</a>` : ''}
         ${l.device_id && !l.submitted_at ? '<button class="btn ghost sm" data-a="reset_device">Reset device</button>' : ''}
+        <button class="btn ghost sm" data-login>${l.username ? 'Change login' : 'Set login'}</button>
         <button class="btn ghost sm" data-a="reissue">New link</button>
         ${!l.submitted_at ? '<button class="btn ghost sm" data-a="extend">+30 days</button>' : '<button class="btn ghost sm" data-a="reopen">Let them edit</button>'}
         ${l.revoked ? '<button class="btn ghost sm" data-a="restore">Switch on</button>' : '<button class="btn ghost sm" data-a="revoke">Switch off</button>'}
@@ -213,7 +227,29 @@ $('#create').onclick = async () => {
   load();
 };
 $('#copyNew').onclick = () => copy($('#newUrl').textContent);
+// login dialog: Nathan types the password; it goes straight to the function, which stores only a PBKDF2 hash
+let LD_ID = '';
+function openLogin(id) {
+  const l = LINKS.find(x => x.id === id); if (!l) return;
+  LD_ID = id; $('#ldTitle').textContent = 'Login for ' + l.client_name;
+  $('#ldUser').value = l.username || ''; $('#ldPass').value = ''; $('#ldMsg').textContent = '';
+  $('#ldClear').hidden = !l.username; $('#loginDlg').showModal(); $('#ldUser').focus();
+}
+async function saveLogin(clear) {
+  const username = clear ? '' : $('#ldUser').value.trim().toLowerCase(), password = $('#ldPass').value;
+  if (!clear && !/^[a-z0-9._-]{3,40}$/.test(username)) { $('#ldMsg').textContent = 'Username: 3–40 letters, numbers, dots, dashes or underscores.'; $('#ldUser').focus(); return; }
+  if (!clear && password.length < 8) { $('#ldMsg').textContent = 'Password needs at least 8 characters.'; $('#ldPass').focus(); return; }
+  $('#ldSave').disabled = true;
+  const r = await api({ action: 'set_login', id: LD_ID, username, password });
+  $('#ldSave').disabled = false;
+  if (!r.ok) { $('#ldMsg').textContent = { username_taken: 'Someone else already has that username.', bad_username: 'That username isn’t allowed.', weak_password: 'Password needs at least 8 characters.' }[r.code] || 'That didn’t save. Try again.'; return; }
+  $('#ldPass').value = ''; $('#loginDlg').close(); toast(clear ? 'Login removed' : 'Login saved'); load();
+}
+$('#ldForm').onsubmit = e => { e.preventDefault(); saveLogin(false); };
+$('#ldClear').onclick = () => saveLogin(true);
+$('#ldCancel').onclick = () => { $('#ldPass').value = ''; $('#loginDlg').close(); };
 $('#ledger').onclick = async e => {
+  const lb = e.target.closest('[data-login]'); if (lb) return openLogin(lb.closest('[data-id]').dataset.id);
   const b = e.target.closest('[data-a]'); if (!b) return;
   const id = b.closest('[data-id]').dataset.id; const a = b.dataset.a;
   const sure = { delete: 'Tap again to delete for good', reissue: 'Tap again: old link stops working', revoke: 'Tap again to switch off', reopen: 'Tap again to reopen' };

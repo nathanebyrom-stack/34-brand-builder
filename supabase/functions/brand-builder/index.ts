@@ -35,6 +35,52 @@ function sameText(a: string, b: string) {
 }
 const clean = (v: unknown, max = 200) => (typeof v === "string" ? v.trim().slice(0, max) : "");
 
+// ---------- passwords (PBKDF2-SHA256, stored as pbkdf2$iterations$salt$hash) ----------
+const ITER = 100_000;
+const b64 = (b: Uint8Array) => btoa(String.fromCharCode(...b));
+const unb64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+async function pbkdf2(pw: string, salt: Uint8Array, iter: number) {
+  const k = await crypto.subtle.importKey("raw", new TextEncoder().encode(pw), "PBKDF2", false, ["deriveBits"]);
+  return new Uint8Array(await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: salt as BufferSource, iterations: iter }, k, 256));
+}
+async function hashPassword(pw: string) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  return `pbkdf2$${ITER}$${b64(salt)}$${b64(await pbkdf2(pw, salt, ITER))}`;
+}
+async function checkPassword(pw: string, stored: string | null) {
+  const [kind, iter, salt, hash] = (stored || "pbkdf2$100000$AAAAAAAAAAAAAAAAAAAAAA==$").split("$");
+  const got = b64(await pbkdf2(pw, unb64(salt), Number(iter))); // always hash, so unknown usernames take as long
+  return kind === "pbkdf2" && !!stored && sameText(got, hash);
+}
+const MAX_TRIES = 5, LOCK_MIN = 15;
+
+// username + password -> a fresh personal link for this device (the old link stops working)
+async function signIn(body: Record<string, unknown>) {
+  const username = clean(body.username, 40).toLowerCase();
+  const password = typeof body.password === "string" ? body.password.slice(0, 200) : "";
+  if (!username || !password) return fail("missing");
+  const { data: link } = await db.from("links").select("*").eq("username", username).maybeSingle();
+  if (link?.locked_until && new Date(link.locked_until) > new Date()) {
+    return json({ ok: false, code: "locked", retry_after: Math.ceil((+new Date(link.locked_until) - Date.now()) / 1000) }, 429);
+  }
+  const good = await checkPassword(password, link?.password_hash ?? null);
+  if (!link || !good) {
+    if (link) {
+      const tries = link.failed_logins + 1;
+      await db.from("links").update(tries >= MAX_TRIES
+        ? { failed_logins: 0, locked_until: new Date(Date.now() + LOCK_MIN * 6e4).toISOString() }
+        : { failed_logins: tries }).eq("id", link.id);
+    }
+    return fail("bad_login", 401);
+  }
+  if (link.revoked) return fail("revoked", 403);
+  if (new Date(link.expires_at) < new Date()) return fail("expired", 403);
+  const token = newToken();
+  const { error } = await db.from("links").update({ token_hash: await sha256(token), device_id: null, failed_logins: 0, locked_until: null }).eq("id", link.id);
+  if (error) return fail("server_error", 500);
+  return json({ ok: true, url: SITE_URL + "?k=" + token });
+}
+
 // ---------- client side ----------
 async function loadLink(token: unknown, device: unknown) {
   if (typeof token !== "string" || token.length < 20 || token.length > 64) return { err: "invalid" };
@@ -86,7 +132,7 @@ async function isAdmin(req: Request) {
   return !!data && sameText(await sha256(key), data.value);
 }
 const LIST_COLS =
-  "id, client_name, client_email, company, note, created_at, expires_at, revoked, device_id, first_opened_at, last_seen_at, open_count, blocked_attempts, saved_at, submitted_at";
+  "id, client_name, client_email, company, note, created_at, expires_at, revoked, device_id, first_opened_at, last_seen_at, open_count, blocked_attempts, saved_at, submitted_at, username";
 
 async function adminAction(action: string, body: Record<string, unknown>) {
   const id = clean(body.id, 40);
@@ -113,7 +159,7 @@ async function adminAction(action: string, body: Record<string, unknown>) {
     case "get": {
       const { data } = await db.from("links").select("*").eq("id", id).maybeSingle();
       if (!data) return fail("not_found", 404);
-      delete data.token_hash;
+      delete data.token_hash; delete data.password_hash;
       return json({ ok: true, link: data });
     }
     case "reissue": { // new link, old one stops working; keeps their answers
@@ -134,6 +180,19 @@ async function adminAction(action: string, body: Record<string, unknown>) {
         : { submitted_at: null, alerted_at: null };
       const { error } = await db.from("links").update(patch).eq("id", id);
       if (error) return fail("update_failed", 500);
+      return json({ ok: true });
+    }
+    case "set_login": { // empty username clears the login
+      const username = clean(body.username, 40).toLowerCase();
+      const password = typeof body.password === "string" ? body.password : "";
+      if (!username) {
+        const { error } = await db.from("links").update({ username: null, password_hash: null }).eq("id", id);
+        return error ? fail("update_failed", 500) : json({ ok: true });
+      }
+      if (!/^[a-z0-9._-]{3,40}$/.test(username)) return fail("bad_username");
+      if (password.length < 8 || password.length > 200) return fail("weak_password");
+      const { error } = await db.from("links").update({ username, password_hash: await hashPassword(password), failed_logins: 0, locked_until: null }).eq("id", id);
+      if (error) return fail(error.code === "23505" ? "username_taken" : "update_failed", error.code === "23505" ? 409 : 500);
       return json({ ok: true });
     }
     case "delete": {
@@ -160,6 +219,7 @@ Deno.serve(async (req) => {
       await db.from("pings").delete().lt("at", new Date(Date.now() - 90 * 864e5).toISOString());
       return json({ ok: true });
     }
+    if (action === "sign_in") return await signIn(body);
     if (["open", "save", "submit"].includes(action)) return await clientAction(action, body);
     if (!(await isAdmin(req))) return fail("not_admin", 401);
     return await adminAction(action, body);
